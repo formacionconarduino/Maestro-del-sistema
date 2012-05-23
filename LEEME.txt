@@ -1,0 +1,7 @@
+
+
+Copiar las librerías al directorio "libraries" de Arduino
+
+
+Compilar con el IDE de Arduino 1.0
+ 
