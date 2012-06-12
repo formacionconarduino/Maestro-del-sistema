@@ -62,7 +62,7 @@ void setup()
   uint8_t subnet[]  = { 255, 255, 0, 0 };
   
   // Inicializa el equipo si es una instalación nueva
-  if (punteroEEprom >= EP_DIR_MAX_ELEM) volverValoresFabrica;
+  if (punteroEEprom >= EP_DIR_MAX_ELEM) volverValoresFabrica();
   
   
   Ethernet.begin(mac, ip, gateway, subnet);
@@ -167,7 +167,7 @@ void ejecutarComando (){
   {    
     case oVOLVER_AJUSTES_FABRICA:  // Formato orden: Comando(HR1)        
      {
-      volverValoresFabrica;
+      volverValoresFabrica();
      }   
      break;
     
