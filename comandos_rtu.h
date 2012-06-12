@@ -21,3 +21,5 @@
 #define RTU_ACTIVACION_PERSIANA 0x28
 #define RTU_DESACTIVACION_PERSIANA 0x29
 #define RTU_DETENER_PERSIANA 0x2A
+#define RTU_OK_MONEDERO 0x31 // Orden tarjeta-monedero OK (está de alta y tiene saldo)
+#define RTU_NACK_MONEDERO 0x2C // Orden tarjeta-monedero no OK

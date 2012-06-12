@@ -11,6 +11,7 @@
 #define TIPO_LUZ_REGULADA 6
 #define TIPO_TERMOSTATO 7
 #define TIPO_PERSIANA 8
+#define TIPO_MONEDERO 9
 
 
 #define LED_AMARILLO 60
@@ -28,8 +29,9 @@
 //Mapa EEPROM
 #define EP_PUNTERO_EEPROM 31
 #define EP_NUM_ELEMENTOS 30
-#define EP_DIR_MAX_ELEM  0x4095
+#define EP_DIR_MAX_ELEM  3589
 #define DIR_MAX_EEPROM 4095
+#define EP_INICIO_TARJETAS_MONEDERO 3590  //para 100 tarjetas-monedero como máximo
 
 
 #define EP_INICIO_ELEMENTOS 40
