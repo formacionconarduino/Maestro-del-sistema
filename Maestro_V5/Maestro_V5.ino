@@ -1,5 +1,5 @@
 //---------------------------------------------------------------------------------------------------------------------------
-//           Maestro domótica V 0.1.0.0
+//           Maestro domótica V 0.1.0.1
 //           Autor: Juan Vila. 28/04/2012
 //           Compilado con Arduino 1.0    
 //           HW: Winkhel WK0500 + RTC
@@ -12,7 +12,7 @@
 #define debug             // Abre terminal serie por puerto USB a 9600 8N1
 #define debugRTU          // Depuración de comunicación RTU con los remotos
 #define debugTCP          // Depuración de comunicación con los HMI en modbus TCP
-//#define debugAltas      // Depuración para altas de nuevos elementos
+#define debugAltas        // Depuración para altas de nuevos elementos
 #define debugComandosRTU  // Depuración para comandos recibidos por modbus TCP
 #define debugRespuestas   // Copia en el terminal las respuestas a los comandos
 
@@ -45,6 +45,10 @@ boolean modoNormal = true; // = false=> Modo sincronismo
 unsigned int idTerminal; // identificador único del terminal que envía los comandos (1..15)
 boolean comandoTCP= false; //true - se ha recibido un comando TCP
 
+unsigned int tarjetaRFID[2]; // Guarda la tarjeta RFID leída en el terminal de monedero
+unsigned int leyendoTipo;
+unsigned int dirMB_Monedero;
+
 // objetos tipo
 Elem_dig_t elemDig;
 Elem_ana_t elemAna;
@@ -52,6 +56,7 @@ Termostato_t termostato;
 Persiana_t persiana;
 Phorario_t pHorario;
 Phorario_ext_t pHorarioExt;
+Monedero_t monedero;
 //-------------------------------------------------------------------------------------------------------
 
 void setup()
@@ -62,7 +67,7 @@ void setup()
   uint8_t subnet[]  = { 255, 255, 0, 0 };
   
   // Inicializa el equipo si es una instalación nueva
-  if (punteroEEprom >= EP_DIR_MAX_ELEM) volverValoresFabrica();
+  if (punteroEEprom >= EP_DIR_MAX_ELEM) volverValoresFabrica ();
   
   
   Ethernet.begin(mac, ip, gateway, subnet);
@@ -91,6 +96,8 @@ void loop()
 {
   Mb.Run();     // Atiende el protocolo modbus TCP
   lecturaRTC(); // Lee el RTC (fecha y hora) y coloca los datos en los HR
+  if (tarjetaRFID[0] != 0 || tarjetaRFID[1] != 0) procesarMonedero();
+  
   
   if (Mb.R[MB_OFFSET_COMANDO] != 0xFFFF) ejecutarComando(); // Si hay comando por TCP, lo ejecuta
   Mb.R[MB_OFFSET_COMANDO]=0xFFFF;                           // y lo borra
@@ -98,6 +105,7 @@ void loop()
   resultadoRTU = modbus_update (remotos, cambio); // Sondea un remoto RTU
   cambio = resultadoRTU; // Al terminar un sondeo cambiamos al siguiente remoto
   if ((modoNormal && lecturaRTU || comandoTCP) && resultadoRTU) gestionRTU();
+  
   //ojo!! cuando no sondea remotos se queda enviando el último comandoTCP
    
   
@@ -107,43 +115,62 @@ void loop()
 
 
 }
-//-------------------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------
 void gestionRTU(){
  
  #ifdef debugRTU
   // Los valores corresponden al último remoto sondeado
   Serial.print ("id: "); Serial.println (remoto->id);
   Serial.print ("Respuesta: "); Serial.println (resultadoRTU);
-  Serial.print ("valor: "); Serial.println (regs[0]);
+  Serial.print ("Regs[0]: "); Serial.println (regs[0]);
+  Serial.print ("Regs[1]: "); Serial.println (regs[1]);
   Serial.print ("funcion: "); Serial.println (remoto->function);
   Serial.print ("HR: "); Serial.println (remoto->address);
   Serial.print ("Cant. HR: "); Serial.println (remoto->no_of_registers);
-  Serial.print ("comando_1: "); Serial.println (comandoRTU[0],HEX);
-  Serial.print ("comando_2: "); Serial.println (comandoRTU[1],HEX);
   Serial.println ("-----------------------------------");
 #endif
 
-byte dirMbAnterior= remoto->id;
-unsigned int valorDevuelto = regs[0];
-boolean commOK = resultadoRTU == 1;
+byte idAnterior = remoto->id;
+byte funcionAnterior = remoto->function;
+byte numRegistrosAnterior = remoto->no_of_registers;
+unsigned int valorDevuelto_0 = regs[0];
+unsigned int valorDevuelto_1 = regs[1];
+boolean lecturaOK = (resultadoRTU == 1) && (funcionAnterior == 3);
+boolean escrituraOK = (resultadoRTU == 1) && ((funcionAnterior == 16) || (funcionAnterior == 6));
+unsigned int tipo=leyendoTipo;
+boolean respuestaAutomatica = (tipo==TIPO_MONEDERO) && lecturaOK && (regs[0] !=0 || regs[1] !=0);
 
-MbRTU_Leido[dirMbAnterior]= true; // Para que no se vuelva a sondear en este ciclo
 
-// Se carga el siguiente remoto a sondear
-if (!comandoTCP && (EEPROM.read(EP_NUM_ELEMENTOS) >0)){
+
+ if (funcionAnterior == 3) MbRTU_Leido[idAnterior]= true; // Para que no se vuelva a sondear en este ciclo
+ 
+ if (lecturaOK){
+   if (tipo!= TIPO_MONEDERO) Mb.IR[idAnterior] = valorDevuelto_0; // Cargamos valor devuelto para Mb TCP
+   else{
+     tarjetaRFID[0]=valorDevuelto_0;
+     tarjetaRFID[1]=valorDevuelto_1;
+     Mb.R[16]=valorDevuelto_0;
+     Mb.R[17]=valorDevuelto_1;
+     dirMB_Monedero=idAnterior;
+   }
+ }
+
+if (!comandoTCP && !respuestaAutomatica && (EEPROM.read(EP_NUM_ELEMENTOS) >0)){
     lecturaCiclicaRTU(); 
     incrementarPuntero (&punteroRTU);
   } 
-// o se carga el comando a enviar por TCP si es el caso
-else for (int i=0; i < RTU_NO_HR; i++) regs[i]= comandoRTU[i];
-    
- if (!comandoTCP && commOK) // sondeo anterior terminado OK
-    Mb.IR[dirMbAnterior] = valorDevuelto; // Cargamos valor devuelto para Mb TCP
+
+if (comandoTCP) for (int i=0; i < RTU_NO_HR; i++) regs[i]= comandoRTU[i];
  
-  senalizarRTU (commOK, dirMbAnterior);   
+ 
+  senalizarRTU (lecturaOK || escrituraOK, idAnterior);   
   comandoTCP= false;
 }
-//--------------------------------------------------------------------------------------------
+
+
+
+//------------------------------------------------------------------------------------------------------------------
+
 void ejecutarComando (){
 
    idTerminal = (Mb.R[MB_OFFSET_COMANDO] & 0xF000) >> 12; // Se extrae el identificador de terminal (1..15)
@@ -167,7 +194,7 @@ void ejecutarComando (){
   {    
     case oVOLVER_AJUSTES_FABRICA:  // Formato orden: Comando(HR1)        
      {
-      volverValoresFabrica();
+      volverValoresFabrica ();
      }   
      break;
     
@@ -191,6 +218,7 @@ void ejecutarComando (){
          if (tipo==TIPO_PROG_HORARIO) altaProgramaHorario (Mb.R);
          if (tipo==TIPO_TERMOSTATO) altaTermostato (Mb.R);
          if (tipo==TIPO_PERSIANA) altaPersiana (Mb.R);
+         if (tipo==TIPO_MONEDERO) altaMonedero (Mb.R);
      }   
      break;   
       
@@ -282,6 +310,87 @@ void ejecutarComando (){
          responder (NO_RESP);
          comandoTCP = true;
          actuarTermostato (Mb.R[MB_OFFSET_COMANDO+1], oAJUSTAR_VELOCIDAD_VENT);
+      break;
+      
+      case oALTA_TARJETA_MONEDERO:  // alta de tarjeta 
+      {
+         responder (NO_RESP);
+         byte byte2 = highByte (Mb.R[MB_OFFSET_COMANDO+1]);  //cuarto byte del número de la tarjeta (alto)
+         byte byte3 = lowByte (Mb.R[MB_OFFSET_COMANDO+1]);   //tercer byte del número de la tarjeta
+         byte byte4 = highByte (Mb.R[MB_OFFSET_COMANDO+2]);  //segundo byte del número de la tarjeta
+         byte byte5 = lowByte (Mb.R[MB_OFFSET_COMANDO+2]);   //primer byte del número de la tarjeta (bajo)
+          
+         unsigned long numero= ((unsigned long)byte2)<<24 | ((unsigned long)byte3)<<16 | ((unsigned long)byte4)<<8 | (unsigned long)byte5;
+ 
+         altaTarjeta(numero);   //dar de alta la tarjeta leída en el maestro TCP
+      
+         #ifdef debugTCP
+         Serial.print ("Tarjeta para dar de alta: ");
+         Serial.println (numero,HEX);  
+         #endif
+      }  
+      break;
+    
+      case oBAJA_TARJETA_MONEDERO:  //baja tarjeta
+      {
+        responder (NO_RESP);
+        byte byte2 = highByte (Mb.R[MB_OFFSET_COMANDO+1]);  //byte ALTO del número de la tarjeta
+        byte byte3 = lowByte (Mb.R[MB_OFFSET_COMANDO+1]);   //byte anterior al ALTO del número de la tarjeta
+        byte byte4 = highByte (Mb.R[MB_OFFSET_COMANDO+2]);  //byte siguiente al BAJO del número de la tarjeta
+        byte byte5 = lowByte (Mb.R[MB_OFFSET_COMANDO+2]);   //byte BAJO del número de la tarjeta
+          
+        unsigned long numero= ((unsigned long)byte2)<<24 | ((unsigned long)byte3)<<16 | ((unsigned long)byte4)<<8 | (unsigned long)byte5;
+  
+        bajaTarjeta(numero);   //dar de baja la tarjeta leída en el maestro TCP
+      
+#ifdef debugTCP
+   Serial.print ("Tarjeta para dar de baja: ");
+   Serial.println (numero,HEX); 
+#endif
+      }  
+      break;
+   
+      case oCONSULTAR_SALDO_TARJETA_MONEDERO:  //consultar saldo tarjeta-monedero
+      {
+        responder (NO_RESP);
+        byte byte2 = highByte (Mb.R[MB_OFFSET_COMANDO+1]);  //byte ALTO del número de la tarjeta
+        byte byte3 = lowByte (Mb.R[MB_OFFSET_COMANDO+1]);   //byte anterior al ALTO del número de la tarjeta
+        byte byte4 = highByte (Mb.R[MB_OFFSET_COMANDO+2]);  //byte siguiente al BAJO del número de la tarjeta
+        byte byte5 = lowByte (Mb.R[MB_OFFSET_COMANDO+2]);   //byte BAJO del número de la tarjeta
+          
+        unsigned long numero= ((unsigned long)byte2)<<24 | ((unsigned long)byte3)<<16 | ((unsigned long)byte4)<<8 | (unsigned long)byte5;
+  
+        byte saldo=consultarSaldo(numero);
+ //ojo        Mb.R[3]= saldo;   //escribo en el registro MB TCP [3] el saldo de la tarjeta RFID   ESTO EN IR CON EL NUMERO TARJETA??
+     
+#ifdef debugTCP
+   Serial.print("Saldo tarjeta= ");
+   Serial.println(saldo,DEC);
+#endif
+      }  
+      break; 
+      
+      case oINCREMENTAR_SALDO_TARJETA_MONEDERO: // Formato orden: Comando(HR1) + Código Tarjeta Monedero_1(HR2) + Código Tarjeta Monedero_2(HR3) + Saldo a incrementar (HR4)
+         {
+          responder (NO_RESP);
+      
+          byte byte1 = lowByte (Mb.R[MB_OFFSET_COMANDO+3]);   //saldo a incrementar en la tarjeta
+          byte byte2 = highByte (Mb.R[MB_OFFSET_COMANDO+1]);  //byte ALTO del número de la tarjeta
+          byte byte3 = lowByte (Mb.R[MB_OFFSET_COMANDO+1]);   //byte anterior al ALTO del número de la tarjeta
+          byte byte4 = highByte (Mb.R[MB_OFFSET_COMANDO+2]);  //byte siguiente al BAJO del número de la tarjeta
+          byte byte5 = lowByte (Mb.R[MB_OFFSET_COMANDO+2]);   //byte BAJO del número de la tarjeta
+          
+          unsigned long numero= ((unsigned long)byte2)<<24 | ((unsigned long)byte3)<<16 | ((unsigned long)byte4)<<8 | (unsigned long)byte5;
+ 
+          incrementarSaldo(numero,byte1); //incrementa el saldo de la tarjeta
+          byte saldo=consultarSaldo(numero);
+//ojo          Mb.R[3]= saldo;  //escribo en el registro MB TCP [3] el saldo de la tarjeta RFID  !!!HACERLO EN LOS IR CON SALDO Y Nº TARJETA
+     
+          #ifdef debugTCP
+          Serial.print("Nuevo saldo=");
+          Serial.println(saldo,DEC);
+          #endif
+          }  
       break;
       
       case oMODO_SINCRONIZACION: // Formato orden: Comando(HR1) + Tipo(HR2)
@@ -611,8 +720,15 @@ unsigned int leerRegistroRemoto (byte dirMb, byte tipo){
     case TIPO_TERMOSTATO:
       remoto->address = RTU_TEMPERATURA;
       break;
+      
+    case TIPO_MONEDERO:
+      remoto->address = RTU_HR_ADDR_MONEDERO;
+      remoto->no_of_registers = 2;
+    break;
+      
   } 
   contadorRTU++; 
+  leyendoTipo = tipo;
 } 
 //--------------------------------------------------------------------------------------------------
 void lecturaCiclicaRTU (){
@@ -818,6 +934,42 @@ void altaTermostato (int* p){
 #endif   
   }
 }
+
+//--------------------------------------------------------------------------------------------
+// Realiza el alta (inserción en EEPROM) de un equipo esclavo Monedero 
+// Actualiza el puntero para una nueva alta
+// p: puntero al inicio del array de holding registers
+// Responde en los HR:
+//   - ERR_IdDuplicado si el idElemento ya se encuentra en EEPROM
+//   - ERR_MemoriaInsuficiente si se alcanzó el límite de la zona de elementos
+//   - OK si la inserción en EEPROM (alta) se realizó correctamente
+//--------------------------------------------------------------------------------------------
+void altaMonedero (int* p){
+  
+  Monedero_t nuevoElemento;
+  p= p+MB_OFFSET_COMANDO+1;
+  nuevoElemento.idTipo = *(p++);
+  nuevoElemento.idElemento = *(p++); 
+
+  
+  if (busquedaElemento (nuevoElemento.idElemento) != -1) responder (ERR_IdDuplicado);
+  else if ((nuevoElemento.idElemento & 0x000F) != 0) responder (ERR_DirMbNoValida);
+  else if ((nuevoElemento.idElemento & 0xFFF0)>>4 > MAX_REMOTOS_RTU) responder (ERR_DirMbNoValida);
+  else if ((punteroEEprom + sizeof (nuevoElemento)) > EP_DIR_MAX_ELEM) responder (ERR_MemoriaInsuficiente);
+  else{
+   eeprom_write_block((const void*)&nuevoElemento, (void*)punteroEEprom, sizeof (nuevoElemento));
+   actualizarPuntero(sizeof (nuevoElemento));    
+   responder (OK);
+   
+#ifdef debugAltas  
+   Serial.println ("Alta terminal Monedero: ");
+   Serial.print ("idElemento: "); Serial.println (nuevoElemento.idElemento, HEX);
+   Serial.print ("Puntero: "); Serial.println (punteroEEprom, HEX);
+   Serial.println ("-----------------------------------");
+#endif   
+  }
+}
+
 //--------------------------------------------------------------------------------------------
 // Actualiza el puntero de altas en RAM y EEPROM
 // Actualiza el número de elementos de alta en EEPROM (+1)
@@ -837,7 +989,8 @@ void mb_test_altas (){
   Mb.R [MB_TEST_ALTAS-2] = EEPROM.read (EP_NUM_ELEMENTOS);
   Mb.R [MB_TEST_ALTAS-1] = punteroEEprom;
   for (int i=MB_TEST_ALTAS; i<=MB_TEST_ALTAS+100; i++) 
-   Mb.R [i] = EEPROM.read (EP_INICIO_ELEMENTOS+i-MB_TEST_ALTAS);
+   //Mb.R [i] = EEPROM.read (EP_INICIO_TARJETAS_MONEDERO+i-MB_TEST_ALTAS);
+  Mb.R [i] = EEPROM.read (EP_INICIO_ELEMENTOS+i-MB_TEST_ALTAS);
 }
 //--------------------------------------------------------------------------------------------
 
@@ -884,9 +1037,16 @@ switch (tipo){
       
       case TIPO_PERSIANA:
         *p+=sizeof(persiana);
+      break;   
         
       case TIPO_TERMOSTATO:
-        *p+=sizeof(termostato);     
+        *p+=sizeof(termostato); 
+      break;
+      
+      case TIPO_MONEDERO:
+        *p+=sizeof(monedero); 
+      break;
+      
       }
 }
 //---------------------------------------------------------------------------------------------
@@ -897,6 +1057,9 @@ void volverValoresFabrica(){
       //Se coloca puntero al inicio de la zona de elementos
       EEPROM.write (EP_PUNTERO_EEPROM+1,EP_INICIO_ELEMENTOS & 0x00FF); 
       EEPROM.write (EP_PUNTERO_EEPROM,EP_INICIO_ELEMENTOS >> 8);
+      
+      EEPROM.write (EP_INICIO_TARJETAS_MONEDERO,(EP_INICIO_TARJETAS_MONEDERO+2) & 0x00FF); 
+      EEPROM.write (EP_INICIO_TARJETAS_MONEDERO+1,(EP_INICIO_TARJETAS_MONEDERO+2) >> 8);
       // Se carga el puntero en RAM 
       punteroEEprom = (EEPROM.read (EP_PUNTERO_EEPROM))<<8 | EEPROM.read (EP_PUNTERO_EEPROM+1);
       EEPROM.write (EP_NUM_ELEMENTOS,0); // Cantidad de elementos = 0
@@ -905,3 +1068,260 @@ void volverValoresFabrica(){
       // faltan ajustes por defecto (IP, máscara, parámetros RTU...) y reiniciar
 }
 //---------------------------------------------------------------------------------------------
+
+
+//-----------------------------------------------------------------------------------------------
+// Busca si la tarjeta leída está de alta en el sistema
+//Entrada: número de la tarjeta RFID
+//Devuelve:
+//      primera dirección en la EEPROM de los datos de la tarjeta leída
+//     -1 si no hay tarjetas de alta en el sistema o no encontró la tarjeta en el sistema
+//-----------------------------------------------------------------------------------------------
+  int buscarTarjeta (unsigned long numTarjeta)  // busca si la tarjeta leída está de alta en el sistema
+  {  
+    Serial.println ("-----------------------------------------------");
+    Serial.print ("numero tarjeta: "); Serial.println (numTarjeta,HEX);
+    byte punteroL = EEPROM.read(EP_INICIO_TARJETAS_MONEDERO);
+    byte punteroH = EEPROM.read(EP_INICIO_TARJETAS_MONEDERO+1);
+    int puntero= punteroH <<8 | punteroL;
+    Serial.print ("puntero: "); Serial.println (puntero);
+    byte ntarjetas=(byte)((puntero-EP_INICIO_TARJETAS_MONEDERO+2)/5);
+    Serial.print ("ntarjetas: "); Serial.println (ntarjetas);
+    Serial.println ("-----------------------------------------------");
+   
+    //Serial.println("Buscando tarjeta en la EEPROM...");
+    //Serial.print("punteroL= ");
+    //Serial.println(punteroL,DEC);
+    //Serial.print("punteroH= ");
+    //Serial.println(punteroH,DEC);
+    //Serial.print("puntero= ");
+    //Serial.println(puntero,DEC);
+    //Serial.print("ntarjetas= ");
+    //Serial.println(ntarjetas,DEC); 
+    if (puntero==EP_INICIO_TARJETAS_MONEDERO+2)   // no hay tarjetas de alta en el sistema
+      {
+        //Serial.println("No hay tarjetas de alta en el sistema");
+        return -1;  // No hay tarjetas de alta en el sistema
+      }
+    else
+      {
+        for (int i=0; i<ntarjetas; i++)
+          {
+                         
+            if (
+               (EEPROM.read(EP_INICIO_TARJETAS_MONEDERO+2+5*i) == (numTarjeta & 0x000000FF)) && 
+               (EEPROM.read(EP_INICIO_TARJETAS_MONEDERO+3+5*i) == (numTarjeta & 0x0000FF00)>>8) &&
+               (EEPROM.read(EP_INICIO_TARJETAS_MONEDERO+4+5*i) == (numTarjeta & 0x00FF0000)>>16) &&
+               (EEPROM.read(EP_INICIO_TARJETAS_MONEDERO+5+5*i) == (numTarjeta & 0xFF000000)>>24)
+               )
+               
+               
+               {
+                                                
+                 //Serial.print("Primera direccion en la EEPROM de los datos de la tarjeta leida: ");
+                 //Serial.println(EP_INICIO_TARJETAS_MONEDERO+2+5*i, DEC); 
+                 return EP_INICIO_TARJETAS_MONEDERO+2+5*i;//primera direcciÃ³n en la EEPROM de los datos de la tarjeta leÃ­da:
+                                              //4 bytes para el nÃºmero de tarjeta y 1 byte para el saldo de la tarjeta
+                             
+               }                               
+                         
+          }
+          //Serial.println("No se encuentra la tarjeta buscada en la EEPROM");
+          return -1;   // no encontrÃ³ la tarjeta buscada en la EEPROM
+      }  
+      
+    
+    
+  }
+  
+  //---------------------------------------------------------------------------------------------
+  //Da de alta tarjetas RFID guardándolas en la EEPROM
+  //Entrada: número de la tarjeta RFID
+  //Devuelve:
+  //      1 si la tarjeta RFID se ha dado de alta correctamente en el sistema
+  //     -1 si la tarjeta RFID ya estaba de alta en el sistema
+  //---------------------------------------------------------------------------------------------
+  int altaTarjeta(unsigned long numTarjeta)
+  {
+    
+    if (buscarTarjeta(numTarjeta)== -1) // Tarjeta no dada de alta
+      {
+        byte punteroL = EEPROM.read(EP_INICIO_TARJETAS_MONEDERO);
+        byte punteroH = EEPROM.read(EP_INICIO_TARJETAS_MONEDERO+1);
+        int puntero= punteroH <<8 | punteroL;
+        
+        EEPROM.write(puntero,numTarjeta & 0x000000FF);              //guardar los 8 bits menos significativos del nÂº de la tarjeta (byte1)
+        EEPROM.write(puntero+1,(numTarjeta & 0x0000FF00)>>8);        //guardar byte2 del nÂº de la tarjeta
+        EEPROM.write(puntero+2, (numTarjeta & 0x00FF0000)>>16);     //guardar byte3 del nÂº de la tarjeta
+        EEPROM.write(puntero+3, (numTarjeta & 0xFF000000)>>24);     //guardar los 8 bits mÃ¡s significativos del nÂº de la tarjeta (byte4)
+        EEPROM.write(puntero+4,0);                                  //saldo cero para la tarjeta dada de alta ???
+                      
+        
+        puntero+= 5; // 
+        
+         EEPROM.write(EP_INICIO_TARJETAS_MONEDERO, puntero & 0x00FF); 
+         EEPROM.write(EP_INICIO_TARJETAS_MONEDERO+1, (puntero & 0xFF00) >> 8);
+         return 1; //la tarjeta se ha dado de alta en el sistema       
+      }
+    else return -1;  //la tarjeta ya existe en la EEPROM. Ya estaba de alta.  
+  }
+  
+  //---------------------------------------------------------------------------------------------
+  //Para dar de baja una tarjeta RFID en el sistema
+  //Entrada: número de la tarjeta RFID
+  //Devuelve:
+  //      1 si la tarjeta se ha dado de baja en el sistema
+  //     -1 si no se ha encontrado la tarjeta que se quiere dar de baja
+  //---------------------------------------------------------------------------------------------
+  
+  int bajaTarjeta(unsigned long numTarjeta)
+  {
+    
+    if (buscarTarjeta(numTarjeta)== -1) return -1; // tarjeta no encontrada
+    else
+      {     
+       //muevo la Ãºltima tarjeta para el hueco que deja la que se da de baja 
+       int punteroBaja=buscarTarjeta(numTarjeta);    //direcciÃ³n de la tarjeta que se da de baja
+           
+       //muevo el puntero 5 posiciones hacia arriba para leer la Ãºltima tarjeta que estÃ¡ en la EEPROM
+       byte punteroL = EEPROM.read(EP_INICIO_TARJETAS_MONEDERO);
+       byte punteroH = EEPROM.read(EP_INICIO_TARJETAS_MONEDERO+1);
+       int puntero= punteroH <<8 | punteroL;
+       puntero=puntero-5;
+       EEPROM.write(EP_INICIO_TARJETAS_MONEDERO,puntero & 0x00FF);   //guardar el valor del puntero en EP_INICIO_TARJETAS_MONEDERO y EP_INICIO_TARJETAS_MONEDERO+1
+       EEPROM.write(EP_INICIO_TARJETAS_MONEDERO+1,(puntero & 0xFF00) >> 8);   
+              
+       byte valor=EEPROM.read(puntero);          //leo la Ãºltima tarjeta y la coloco en el lugar de la que se diÃ³ de baja
+       if (EEPROM.read(punteroBaja)!=valor)
+	   {
+		EEPROM.write(punteroBaja,valor);
+	   }
+       valor=EEPROM.read(puntero+1);
+       if (EEPROM.read(punteroBaja+1)!=valor)
+	   {
+		EEPROM.write(punteroBaja+1,valor);
+	   }
+       valor=EEPROM.read(puntero+2);
+       if (EEPROM.read(punteroBaja+2)!=valor)
+	   {
+		EEPROM.write(punteroBaja+2,valor);
+	   }
+       valor=EEPROM.read(puntero+3);
+       if (EEPROM.read(punteroBaja+3)!=valor)
+	   {
+		EEPROM.write(punteroBaja+3,valor);
+	   }
+       valor=EEPROM.read(puntero+4);
+       if (EEPROM.read(punteroBaja+4)!=valor)
+	   {
+		EEPROM.write(punteroBaja+4,valor);
+	   }
+       
+       return 1;  //la tarjeta se ha dado de baja en el sistema     
+      }    
+  }
+  
+  
+  //----------------------------------------------------------------------------------------------
+  //Para consultar el saldo de una tarjeta RFID
+  //Entrada: número de la tarjeta RFID
+  //Devuelve:
+  //        -1 si no se ha encontrado la tarjeta en el sistema
+  //        saldo de la tarjeta
+  //----------------------------------------------------------------------------------------------
+  byte consultarSaldo(unsigned long numTarjeta)
+  {
+    if (buscarTarjeta(numTarjeta)== -1) return -1; //no se ha encontrado la tarjeta en la EEPROM: no estaba de alta
+                     //devuelve un valor de 255
+    else return EEPROM.read(buscarTarjeta(numTarjeta)+4);  //lee el valor del saldo de la tarjeta     
+  }  
+  
+ //----------------------------------------------------------------------------------------------
+ //Para incrementar el saldo de una tarjeta RFID
+ //Entrada: número de la tarjeta RFID y valor del incremento de saldo que se desea realizar
+ //Devuelve:
+ //      -1 si no se ha encontrado la tarjeta en el sistema
+ //       0 si se pretende un incremento de saldo negativo o si saldo+incrSaldo>254
+ //----------------------------------------------------------------------------------------------
+  byte incrementarSaldo(unsigned long numTarjeta, byte incrSaldo)
+  {
+    if (buscarTarjeta(numTarjeta)== -1) return -1; //no se ha encontrado la tarjeta en la EEPROM: no estaba de alta
+    else
+      { 
+       byte valor=EEPROM.read(buscarTarjeta(numTarjeta)+4);  //lee el valor del saldo de la tarjeta
+       // comprobar que es un valor entero
+       if ((incrSaldo)>0 & (valor+incrSaldo<255)){
+         EEPROM.write(buscarTarjeta(numTarjeta)+4,valor+incrSaldo);  //guarda el nuevo valor de saldo de la tarjeta
+         return 1;
+       }
+       else return 0; //mejor poner return distinto de -1 para ver por quÃ© sale de la funciÃ³n. AquÃ­ es por incrSaldo negativo o porque valor+incrSaldo>254
+      }  
+  }  
+  
+  
+  //----------------------------------------------------------------------------------------------
+  //Para decreemntar el saldo de una tarjeta RFID
+  //Entrada: número de la tarjeta RFID y valor de la cantidad que se quiere decrementar
+  //Devuelve:
+  //        -1 si no se ha encontrado la tarjeta en el sistema
+  //         0 si no se puede decrementar el saldo porque se quedaría en números rojos
+  //----------------------------------------------------------------------------------------------
+  byte decrementarSaldo(unsigned long numTarjeta, byte decrSaldo)
+  {
+    if (buscarTarjeta(numTarjeta)== -1)
+      {
+       return -1; //no se ha encontrado la tarjeta en la EEPROM: no estaba de alta
+                    
+      }
+    else
+      { 
+       byte valor=EEPROM.read(buscarTarjeta(numTarjeta)+4);  //lee el valor del saldo de la tarjeta
+       if ((decrSaldo)>0 & (valor-decrSaldo>=0))  //no pongo saldos negativos con el formato byte o sÃ­ los ponemos????
+        {
+          EEPROM.write(buscarTarjeta(numTarjeta)+4,valor-decrSaldo);  //guarda el nuevo valor de saldo de la tarjeta
+        }
+       else
+        {
+          return 0; // no puedo decrementar el saldo
+        } 
+      }  
+  }  
+ //--------------------------------------------------------------------------------------------------------------
+
+void procesarMonedero (){
+    
+  byte saldo;
+  
+  decrementarSaldo ((long)(tarjetaRFID[0])<<16 | tarjetaRFID[1], 1); //de momento se decrementa 1 unidad
+  saldo = consultarSaldo((long)(tarjetaRFID[0])<<16 | tarjetaRFID[1]);
+  
+  if (saldo>0 && saldo<255) comandoRTU[0]= RTU_OK_MONEDERO;   
+  else comandoRTU[0]= RTU_NACK_MONEDERO; 
+      
+  comandoRTU[1]= saldo; 
+  remoto->id = dirMB_Monedero;
+  remoto->function = PRESET_MULTIPLE_REGISTERS;
+  remoto->address = RTU_HR_COMANDO;
+  remoto->no_of_registers = 2;
+  
+  regs[0]=comandoRTU[0];
+  regs[1]=comandoRTU[1];
+  tarjetaRFID[0]=0; tarjetaRFID[1]=0; //borramos tarjeta leída
+
+#ifdef debugComandos     
+      Serial.println ("Configurada orden a monedero: ");
+      Serial.print ("idElemento: "); Serial.println (id_elemento,HEX);
+      Serial.print ("dirModbus: "); Serial.println (remoto->id);
+      Serial.print ("Función: "); Serial.println (remoto->function);
+      Serial.print ("dirHR_Remoto: "); Serial.println (remoto->address);
+      Serial.print ("Num_HR: "); Serial.println (remoto->no_of_registers);
+      Serial.print ("ComandoAlRemoto: "); Serial.println (comandoRTU[0],HEX);
+      Serial.print ("Saldo: "); Serial.println (comandoRTU[1],HEX);
+      Serial.println ("------------------------------------------");
+#endif   
+
+
+   
+}
+
+  
