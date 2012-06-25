@@ -151,13 +151,26 @@ boolean respuestaAutomatica = (tipo==TIPO_MONEDERO) && lecturaOK && (regs[0] !=0
      case TIPO_ENCHUFE:
      case TIPO_LUZ_SIMPLE:
      case TIPO_LUZ_REGULADA:
-     case TIPO_TERMOSTATO:
      case TIPO_PERSIANA:
      // comprobar aquí las respuestas automáticas
      //comprobarRespuestaAutomatica (idAnterior, Mb.IR, regs);
        for (byte k=0; k < CANT_IR_ESTADO; k++) Mb.IR[idAnterior * CANT_IR_ESTADO +k] = regs[k]; // Cargamos valor devuelto para Mb TCP
      break;
-
+     case TIPO_TERMOSTATO:
+     {
+       if ((funcionAnterior == 3) && (remoto->address == RTU_TEMPERATURA)){
+         anadirOrdenColaRTU (READ_HOLDING_REGISTERS, idAnterior, RTU_CONSIGNA_DIA, 1, comandoRTU);
+         anadirOrdenColaRTU (READ_HOLDING_REGISTERS, idAnterior, RTU_MODO_DIA, 1, comandoRTU);
+         Mb.IR[idAnterior * CANT_IR_ESTADO] = (Mb.IR[idAnterior * CANT_IR_ESTADO] & 0xFE00) | (regs[0] & 0x01FF);
+       }
+       else if ((funcionAnterior == 3) && (remoto->address == RTU_CONSIGNA_DIA))
+         Mb.IR[idAnterior * CANT_IR_ESTADO] = (Mb.IR[idAnterior * CANT_IR_ESTADO] & 0x81FF) | (regs[0] & 0x7E00);
+       else if ((funcionAnterior == 3) && (remoto->address == RTU_MODO_DIA))
+         if (bitRead (regs[0],0)) Mb.IR[idAnterior * CANT_IR_ESTADO] = Mb.IR[idAnterior * CANT_IR_ESTADO] | 0x8000;  
+            else Mb.IR[idAnterior * CANT_IR_ESTADO] = Mb.IR[idAnterior * CANT_IR_ESTADO] & 0x7FFF;           
+     }     
+     break;
+     
      case TIPO_MONEDERO:
        tarjetaRFID[0]= regs[0];
        tarjetaRFID[1]= regs[1];
@@ -463,6 +476,7 @@ void actuarElementoDigital (int id_elemento, int tipo, int orden){
     comandoRTU[0]= orden;   
     comandoRTU[1]= 1 << (id_elemento & 0x000F);
     anadirOrdenColaRTU (PRESET_MULTIPLE_REGISTERS, id_elemento >> 4, RTU_HR_COMANDO, RTU_NO_HR, comandoRTU);
+    anadirOrdenColaRTU (READ_HOLDING_REGISTERS, id_elemento >> 4, RTU_HR_ADDR, RTU_NO_HR_LECTURA, comandoRTU);
     
 #ifdef debugComandos     
       Serial.println ("Configurada orden a elemento digital: ");
@@ -485,6 +499,7 @@ void actuarPersiana (int id_elemento, int tipo, int orden){
   if (tipoElemento (busquedaElemento (id_elemento)) == tipo){
       comandoRTU[0]= orden;    
       anadirOrdenColaRTU (PRESET_MULTIPLE_REGISTERS, id_elemento >> 4, RTU_HR_COMANDO, 1, comandoRTU);
+      anadirOrdenColaRTU (READ_HOLDING_REGISTERS, id_elemento >> 4, RTU_HR_ADDR, RTU_NO_HR_LECTURA, comandoRTU);
   
 
 #ifdef debugComandos    
@@ -515,6 +530,7 @@ void actuarElementoAnalogico (int id_elemento, int tipo, int orden, unsigned int
       comandoRTU[1]= 1 << (id_elemento & 0x000F); 
       comandoRTU[2]= valor;
       anadirOrdenColaRTU (PRESET_MULTIPLE_REGISTERS, id_elemento >> 4, RTU_HR_COMANDO, 3, comandoRTU);
+      anadirOrdenColaRTU (READ_HOLDING_REGISTERS, id_elemento >> 4, RTU_HR_ADDR, RTU_NO_HR_LECTURA, comandoRTU);
 
 #ifdef debugComandos     
       Serial.println ("Configurada orden a elemento analógico: ");
@@ -665,7 +681,7 @@ unsigned int leerRegistroRemoto (byte dirMb, byte tipo){
 
   remoto->id = dirMb;
   remoto->function = READ_HOLDING_REGISTERS;
-  remoto->no_of_registers = 1;
+  remoto->no_of_registers = RTU_NO_HR_LECTURA;
   
 
   switch (tipo){

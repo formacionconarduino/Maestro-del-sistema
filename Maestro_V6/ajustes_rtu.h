@@ -8,6 +8,7 @@
 #define RTU_MAX_NO_HR 1 // Cantidad de HR máxima en los remotos
 
 #define RTU_HR_ADDR 2
+#define RTU_NO_HR_LECTURA 1
 #define RTU_HR_ADDR_MONEDERO 16 // dirección HR para lectura RFID en monedero
 
 #define RTU_HR_COMANDO 0 // Dirección Modbus en la que los remotos aceptan órdenes
